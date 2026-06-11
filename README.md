@@ -56,6 +56,18 @@ handle.refresh(RefreshTarget::Orders).await; // force an immediate refresh
 
 See **[`DESIGN.md`](./DESIGN.md)** for the full data model, the order finite-state machine, the stateful/observable layer, and the control plane.
 
+## Implementation status
+
+- [x] **`tossinvest-model`** — all 53 schemas, open enums (unknown-tolerant), exact decimals, order FSM types
+- [x] **`tossinvest-rate`** — per-group TPS table, KST peak window, shared `governor` registry
+- [x] **`tossinvest`** — OAuth2 + mockable transport + auth/account/rate-limit/retry pipeline + all 20 endpoints + typed errors
+- [x] **`tossinvest-state`** — pure projection core (replay-tested FSM), tokio reconciler, snapshot + delta stream, optimistic submit
+- [x] On-demand `refresh()`, adaptive cadence, demand-gated price/holdings leases
+- [x] Cross-resource invalidation (fills refetch holdings — coalesced, demand-gated)
+- [ ] Dynamic AIMD rate limiting + UI cadence-clamp safeguard (designed in [`DESIGN.md` §5.2–5.3](./DESIGN.md); next increment)
+
+42 tests across the workspace (golden spec-example deserialization, FSM replay, wiremock pipeline + reconciler).
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](./LICENSE).
