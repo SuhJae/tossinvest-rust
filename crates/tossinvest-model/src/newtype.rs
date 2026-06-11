@@ -80,7 +80,11 @@ impl Symbol {
     /// Construct a validated symbol (`^[A-Za-z0-9.-]+$`, non-empty).
     pub fn new(s: impl Into<String>) -> Result<Self, ValidationError> {
         let s = s.into();
-        if s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        if s.is_empty()
+            || !s
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        {
             return Err(ValidationError::Invalid {
                 what: "Symbol",
                 value: s,
@@ -95,7 +99,12 @@ impl ClientOrderId {
     /// Construct a validated idempotency key (`^[A-Za-z0-9-_]+$`, 1..=36 chars).
     pub fn new(s: impl Into<String>) -> Result<Self, ValidationError> {
         let s = s.into();
-        if s.is_empty() || s.len() > 36 || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if s.is_empty()
+            || s.len() > 36
+            || !s
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(ValidationError::Invalid {
                 what: "ClientOrderId",
                 value: s,

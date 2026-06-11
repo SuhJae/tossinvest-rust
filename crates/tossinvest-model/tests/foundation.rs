@@ -53,7 +53,12 @@ fn error_envelope_deserializes_with_data() {
         }
     }"#;
     let resp: ErrorResponse = serde_json::from_str(body).unwrap();
-    let ApiError { code, data, request_id, .. } = resp.error;
+    let ApiError {
+        code,
+        data,
+        request_id,
+        ..
+    } = resp.error;
     assert_eq!(code, ErrorCode::InvalidRequest);
     assert_eq!(request_id.unwrap().as_str(), "01HXYZ");
     let data = data.unwrap();
@@ -63,8 +68,7 @@ fn error_envelope_deserializes_with_data() {
 
 #[test]
 fn error_envelope_without_optional_fields() {
-    let resp: ErrorResponse =
-        serde_json::from_str(r#"{"error":{"code":"maintenance"}}"#).unwrap();
+    let resp: ErrorResponse = serde_json::from_str(r#"{"error":{"code":"maintenance"}}"#).unwrap();
     assert_eq!(resp.error.code, ErrorCode::Maintenance);
     assert!(resp.error.message.is_empty());
     assert!(resp.error.data.is_none());
