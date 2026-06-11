@@ -18,7 +18,9 @@ pub mod core;
 mod runtime;
 
 #[cfg(feature = "tokio")]
-pub use runtime::{PriceLease, RefreshTarget, SchedulerConfig, StateHandle, SubmitOutcome};
+pub use runtime::{
+    HoldingsLease, PriceLease, RefreshTarget, SchedulerConfig, StateHandle, SubmitOutcome,
+};
 
 #[doc(inline)]
 pub use tossinvest as client;

@@ -8,7 +8,7 @@
 use crate::core::{Delta, OpKind, OptimisticOrder, OrderKey, ProjectedState};
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, oneshot};
@@ -79,7 +79,8 @@ impl Store {
     }
 
     /// Apply a mutation: fold on the canonical copy, publish the snapshot, then notify.
-    fn apply<F>(&self, f: F)
+    /// Returns the emitted deltas so the pump can react (e.g. cross-resource invalidation).
+    fn apply<F>(&self, f: F) -> Vec<Delta>
     where
         F: FnOnce(&mut ProjectedState) -> Vec<Delta>,
     {
@@ -87,14 +88,15 @@ impl Store {
             let mut w = self.write.lock().unwrap();
             let deltas = f(&mut w);
             if deltas.is_empty() {
-                return;
+                return Vec::new();
             }
             (Arc::new(w.clone()), deltas)
         };
-        self.state.store(snapshot); // publish snapshot BEFORE notifying
-        for d in deltas {
-            let _ = self.deltas.send(d);
+        self.state.store(snapshot.clone()); // publish snapshot BEFORE notifying
+        for d in &deltas {
+            let _ = self.deltas.send(d.clone());
         }
+        deltas
     }
 
     fn snapshot(&self) -> Arc<ProjectedState> {
@@ -147,6 +149,10 @@ struct Shared {
     cancel: CancellationToken,
     local_seq: AtomicU64,
     price_demand: Mutex<HashMap<String, usize>>,
+    /// Number of live holdings leases (demand-gating for invalidation refetches).
+    holdings_demand: AtomicUsize,
+    /// Set when a fill/close event makes holdings stale; drained (coalesced) on the next tick.
+    holdings_dirty: AtomicBool,
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -168,6 +174,8 @@ impl StateHandle {
             cancel: cancel.clone(),
             local_seq: AtomicU64::new(1),
             price_demand: Mutex::new(HashMap::new()),
+            holdings_demand: AtomicUsize::new(0),
+            holdings_dirty: AtomicBool::new(false),
             task: Mutex::new(None),
         });
         let task = tokio::spawn(pump(PumpCtx {
@@ -241,6 +249,18 @@ impl StateHandle {
         }
     }
 
+    /// Lease holdings tracking. While held, a fill or order-close automatically refetches
+    /// holdings (coalesced, demand-gated). Dropping the lease releases the demand.
+    pub fn watch_holdings(&self) -> HoldingsLease {
+        self.shared.holdings_demand.fetch_add(1, Ordering::Relaxed);
+        // Seed an initial fetch so the lease holder sees current holdings promptly.
+        self.shared.holdings_dirty.store(true, Ordering::Relaxed);
+        let _ = self.shared.commands.send(Command::DemandChanged);
+        HoldingsLease {
+            shared: self.shared.clone(),
+        }
+    }
+
     /// Gracefully stop the reconciler and await its exit.
     pub async fn shutdown(self) {
         self.shared.cancel.cancel();
@@ -282,6 +302,24 @@ impl Drop for PriceLease {
             }
         }
         let _ = self.shared.commands.send(Command::DemandChanged);
+    }
+}
+
+/// An RAII lease that keeps holdings auto-refreshed on fills/closes; drop to release.
+#[must_use = "dropping the lease stops holdings auto-refresh"]
+pub struct HoldingsLease {
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for HoldingsLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HoldingsLease").finish()
+    }
+}
+
+impl Drop for HoldingsLease {
+    fn drop(&mut self) {
+        self.shared.holdings_demand.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -360,16 +398,28 @@ fn handle_command(
         Command::StartSweep => {
             spawn_sweep(store, account, commands);
             spawn_prices(account, commands, demand);
+            // Cross-resource invalidation: if a fill/close marked holdings stale and
+            // someone is watching holdings, refetch once (coalesced via the dirty flag).
+            if demand.holdings_demand.load(Ordering::Relaxed) > 0
+                && demand.holdings_dirty.swap(false, Ordering::Relaxed)
+            {
+                spawn_holdings(store, account);
+            }
         }
         Command::SweepDone { orders, dropped } => {
             for o in orders {
-                store.apply(|s| s.observe_order(o));
+                let deltas = store.apply(|s| s.observe_order(o));
+                mark_invalidation(&deltas, demand);
             }
             for o in dropped {
-                store.apply(|s| s.observe_order(o));
+                let deltas = store.apply(|s| s.observe_order(o));
+                mark_invalidation(&deltas, demand);
             }
         }
-        Command::Observed(o) => store.apply(|s| s.observe_order(*o)),
+        Command::Observed(o) => {
+            let deltas = store.apply(|s| s.observe_order(*o));
+            mark_invalidation(&deltas, demand);
+        }
         Command::Submit {
             local_id,
             intent,
@@ -390,10 +440,12 @@ fn handle_command(
                 let _ = commands.send(Command::SubmitResult { local_id, result });
             });
         }
-        Command::SubmitResult { local_id, result } => match result {
-            Ok(server_id) => store.apply(|s| s.confirm(local_id, server_id)),
-            Err(msg) => store.apply(|s| s.submit_failed(OrderKey::Local(local_id), msg)),
-        },
+        Command::SubmitResult { local_id, result } => {
+            match result {
+                Ok(server_id) => store.apply(|s| s.confirm(local_id, server_id)),
+                Err(msg) => store.apply(|s| s.submit_failed(OrderKey::Local(local_id), msg)),
+            };
+        }
         Command::Cancel { server_id } => {
             store.apply(|s| s.op_submitted(&server_id, OpKind::Cancel));
             let account = account.clone();
@@ -418,6 +470,28 @@ fn handle_command(
         Command::DemandChanged | Command::Wake => { /* loop recomputes cadence from fresh snapshot */
         }
     }
+}
+
+/// Apply the cross-resource invalidation rule: a fill or order-close makes holdings stale.
+/// This only marks a dirty flag (coalesced); the actual refetch is demand-gated on the next
+/// tick. It is a freshness optimization, not a consistency guarantee.
+fn mark_invalidation(deltas: &[Delta], demand: &Arc<Shared>) {
+    let stale = deltas
+        .iter()
+        .any(|d| matches!(d, Delta::FillAdded { .. } | Delta::OrderClosed { .. }));
+    if stale {
+        demand.holdings_dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+fn spawn_holdings(store: &Arc<Store>, account: &AccountClient) {
+    let store = store.clone();
+    let account = account.clone();
+    tokio::spawn(async move {
+        if let Ok(h) = account.holdings(None).await {
+            store.apply(|s| s.update_holdings(h));
+        }
+    });
 }
 
 fn spawn_sweep(store: &Arc<Store>, account: &AccountClient, commands: &flume::Sender<Command>) {

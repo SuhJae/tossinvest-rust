@@ -113,6 +113,65 @@ async fn drop_from_sweep_triggers_terminal_capture() {
 }
 
 #[tokio::test]
+async fn fill_invalidates_holdings_when_leased() {
+    let server = MockServer::start().await;
+    mock_token(&server).await;
+
+    // Sweep #1: order is PENDING. Sweep #2+: order is FILLED (a fill happened).
+    Mock::given(method("GET"))
+        .and(path("/api/v1/orders"))
+        .and(query_param("status", "OPEN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": {"orders": [order_json("A", "PENDING", "10", "0")], "nextCursor": null, "hasNext": false}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/orders"))
+        .and(query_param("status", "OPEN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": {"orders": [order_json("A", "FILLED", "10", "10")], "nextCursor": null, "hasNext": false}
+        })))
+        .mount(&server)
+        .await;
+    // Holdings refetch triggered by the fill — assert it is actually called.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/holdings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": {
+                "totalPurchaseAmount": {"krw": "700000", "usd": null},
+                "marketValue": {"amount": {"krw": "720000"}, "amountAfterCost": {"krw": "718000"}},
+                "profitLoss": {"amount": {"krw": "20000"}, "amountAfterCost": {"krw": "18000"}, "rate": "0.02", "rateAfterCost": "0.018"},
+                "dailyProfitLoss": {"amount": {"krw": "20000"}, "rate": "0.02"},
+                "items": []
+            }
+        })))
+        .expect(1..) // must be fetched at least once
+        .mount(&server)
+        .await;
+
+    let h = handle(&server);
+    let _lease = h.watch_holdings(); // express demand for holdings
+    h.refresh(RefreshTarget::Orders).await; // sees PENDING
+
+    // Run sweeps: the FILLED transition should mark holdings dirty → refetch.
+    let mut got_holdings = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if h.snapshot().holdings.is_some() {
+            got_holdings = true;
+            break;
+        }
+    }
+    assert!(
+        got_holdings,
+        "a fill should invalidate + refetch holdings while leased"
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn optimistic_create_then_confirm() {
     let server = MockServer::start().await;
     mock_token(&server).await;
