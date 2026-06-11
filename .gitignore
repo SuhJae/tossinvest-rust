@@ -2,6 +2,7 @@
 **/*.rs.bk
 *.pdb
 .DS_Store
+.claude/
 
 # Local credentials — never commit
 .env

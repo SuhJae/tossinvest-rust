@@ -83,9 +83,13 @@ impl TossClient {
     async fn send_with_retry(&self, req: RawRequest) -> Result<RawResponse> {
         let max = self.inner.retry.max_attempts.max(1);
         let mut attempt = 0u32;
+        // The first throttle signal observed across this logical request. The congestion
+        // controller is fed exactly once per logical request (recorded on the terminal
+        // outcome) so the multiplicative decrease does not compound across retries.
+        let mut throttle: Option<Feedback> = None;
         loop {
             attempt += 1;
-            // Honor a `Retry-After` park for this group (set by a prior 429).
+            // Honor a `Retry-After` park for this group (set by a prior request's 429).
             if let Some(until) = self.inner.limiter.parked_until(req.group) {
                 let now = std::time::Instant::now();
                 if until > now {
@@ -98,12 +102,10 @@ impl TossClient {
 
             match result {
                 Ok(resp) => {
-                    // Feed the outcome to the congestion controller for FUTURE requests.
-                    self.inner
-                        .limiter
-                        .record_feedback(req.group, feedback_for(&resp));
-
                     if resp.status.is_success() {
+                        // Feed the throttle (if we were throttled) or this success exactly once.
+                        let fb = throttle.take().unwrap_or_else(|| feedback_for(&resp));
+                        self.inner.limiter.record_feedback(req.group, fb);
                         return Ok(resp);
                     }
                     // A 401 may mean an expired token — invalidate so the next attempt refreshes.
@@ -111,24 +113,30 @@ impl TossClient {
                         self.inner.tokens.invalidate();
                     }
                     let retry_after = parse_retry_after(&resp);
+                    if throttle.is_none() && is_retryable_status(resp.status.as_u16()) {
+                        throttle = Some(feedback_for(&resp));
+                    }
                     let should_retry =
                         req.retryable && attempt < max && is_retryable_status(resp.status.as_u16());
                     if should_retry {
                         sleep_backoff(&self.inner.retry, attempt, retry_after).await;
                         continue;
                     }
+                    // Terminal error response: record the throttle / outcome once, then return.
+                    let fb = throttle.take().unwrap_or_else(|| feedback_for(&resp));
+                    self.inner.limiter.record_feedback(req.group, fb);
                     return Ok(resp); // decode() will turn it into Error::Api
                 }
                 Err(e) => {
-                    // A timeout is a soft congestion signal.
-                    if matches!(e, TransportError::Timeout) {
-                        self.inner
-                            .limiter
-                            .record_feedback(req.group, Feedback::Timeout);
+                    if throttle.is_none() && matches!(e, TransportError::Timeout) {
+                        throttle = Some(Feedback::Timeout);
                     }
                     if req.retryable && attempt < max && e.is_transient() {
                         sleep_backoff(&self.inner.retry, attempt, None).await;
                         continue;
+                    }
+                    if let Some(fb) = throttle.take() {
+                        self.inner.limiter.record_feedback(req.group, fb);
                     }
                     return Err(Error::Transport(e));
                 }

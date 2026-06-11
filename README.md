@@ -64,9 +64,9 @@ See **[`DESIGN.md`](./DESIGN.md)** for the full data model, the order finite-sta
 - [x] **`tossinvest-state`** — pure projection core (replay-tested FSM), tokio reconciler, snapshot + delta stream, optimistic submit
 - [x] On-demand `refresh()`, adaptive cadence, demand-gated price/holdings leases
 - [x] Cross-resource invalidation (fills refetch holdings — coalesced, demand-gated)
-- [ ] Dynamic AIMD rate limiting + UI cadence-clamp safeguard (designed in [`DESIGN.md` §5.2–5.3](./DESIGN.md); next increment)
+- [x] Dynamic AIMD rate limiting (adapts to server throttling; header-authoritative; `Retry-After` parking) + cadence-clamp safeguard
 
-42 tests across the workspace (golden spec-example deserialization, FSM replay, wiremock pipeline + reconciler).
+59 tests across the workspace (golden spec-example deserialization, FSM replay, AIMD control-law + wiremock pipeline + reconciler). The AIMD controller was hardened against 8 bugs found by an adversarial multi-agent review (independent hard/soft cooldowns, header double-penalty, state/bucket drift, decrease-compounding-across-retries, proactive peak-window enforcement, burst-leak-on-decrease).
 
 ## License
 

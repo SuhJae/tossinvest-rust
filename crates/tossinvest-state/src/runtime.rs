@@ -613,7 +613,11 @@ fn compute_cadence(snap: &ProjectedState, config: &SchedulerConfig, eff_tps: f64
     } else {
         config.idle
     };
-    // Safeguard: never sweep faster than the effective rate allows (one sweep = one call).
-    let min_interval = Duration::from_secs_f64(1.0 / eff_tps.max(0.1));
+    // Safeguard: never sweep faster than the effective rate allows. A sweep is one list call
+    // but it also spawns per-id terminal fetches (drops) and shares the ORDER_HISTORY budget
+    // with concurrent cancel/get-order work, so reserve ~half the budget for those — the
+    // sweep targets at most half the effective rate. (The governor still hard-caps the rest.)
+    let sweep_budget = (eff_tps * 0.5).max(0.1);
+    let min_interval = Duration::from_secs_f64(1.0 / sweep_budget);
     picked.max(min_interval)
 }
