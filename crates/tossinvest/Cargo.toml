@@ -1,0 +1,45 @@
+[package]
+name = "tossinvest"
+description = "Async Rust client for the Toss Securities Open API (REST): OAuth2 auth, market data, accounts, holdings, and order management with shared per-group rate limiting."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[features]
+default = ["tokio-rt"]
+# Bundle the tokio-based transport, token manager, and timers.
+tokio-rt = ["dep:tokio", "dep:tokio-util"]
+
+[dependencies]
+tossinvest-model.workspace = true
+tossinvest-rate.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded.workspace = true
+rust_decimal.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+secrecy.workspace = true
+tracing.workspace = true
+http.workspace = true
+url.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+futures-core.workspace = true
+backon.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt", "time", "sync", "macros"] }
+tokio-util = { workspace = true, optional = true }
+
+[dev-dependencies]
+wiremock.workspace = true
+pretty_assertions.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

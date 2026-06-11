@@ -1,0 +1,26 @@
+[package]
+name = "tossinvest-model"
+description = "Pure, runtime-free data types for the Toss Securities Open API. Part of the `tossinvest` crate family."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_with.workspace = true
+rust_decimal.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+pretty_assertions.workspace = true

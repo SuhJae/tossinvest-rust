@@ -1,0 +1,40 @@
+[package]
+name = "tossinvest-state"
+description = "Stateful, observable layer for the Toss Securities Open API client: a single reconciler holds live order/holdings/market state so UIs subscribe (snapshot + delta stream) instead of polling."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[features]
+default = ["tokio"]
+# Runtime-agnostic core only; the host drives the StateDriver step-function.
+core = []
+# tokio pump, StateHandle, watch/broadcast bridges.
+tokio = ["dep:tokio", "dep:tokio-util", "tossinvest/tokio-rt"]
+# Serialize the DomainEvent log for golden replay / audit.
+record = ["dep:serde"]
+
+[dependencies]
+tossinvest-model.workspace = true
+tossinvest-rate.workspace = true
+tossinvest.workspace = true
+arc-swap.workspace = true
+flume.workspace = true
+rust_decimal.workspace = true
+tracing.workspace = true
+serde = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "time", "sync", "macros"] }
+tokio-util = { workspace = true, optional = true }
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

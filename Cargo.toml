@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["SuhJae <contact@suhjae.dev>"]
+repository = "https://github.com/SuhJae/tossinvest-rust"
+homepage = "https://suhjae.dev"
+keywords = ["tossinvest", "trading", "stocks", "brokerage"]
+categories = ["api-bindings", "finance"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+# ── internal crates (path + version so they are publishable) ──
+tossinvest-model = { path = "crates/tossinvest-model", version = "0.0.0" }
+tossinvest-rate = { path = "crates/tossinvest-rate", version = "0.0.0" }
+tossinvest = { path = "crates/tossinvest", version = "0.0.0" }
+
+# ── data / serde ──
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = "3"
+serde_urlencoded = "0.7"
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+chrono-tz = "0.10"
+
+# ── errors / secrets / logging ──
+thiserror = "2"
+secrecy = "0.10"
+tracing = "0.1"
+
+# ── http / async ──
+http = "1"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+tokio = { version = "1", default-features = false }
+tokio-util = "0.7"
+backon = "1"
+async-trait = "0.1"
+futures-core = "0.3"
+
+# ── stateful layer ──
+arc-swap = "1"
+flume = "0.11"
+governor = "0.6"
+
+# ── dev ──
+wiremock = "0.6"
+pretty_assertions = "1"
