@@ -2,7 +2,40 @@
 
 Async Rust client for the **[Toss Securities Open API](https://developers.tossinvest.com/docs)** (토스증권 Open API) — KR + US equities: market data, accounts, holdings, and order management, plus an optional stateful layer that holds live state so UIs subscribe instead of polling.
 
-> **Status: early development.** The architecture is fully specified in **[`DESIGN.md`](./DESIGN.md)**; crates are being implemented bottom-up. APIs will change until `0.1.0`.
+> **Status: early development.** The architecture is fully specified in **[`DESIGN.md`](./DESIGN.md)**. The model, rate-limit, stateless client, and stateful layers are implemented and tested; the control-plane refinements (§5) are next. APIs will change until `0.1.0`.
+
+## Quick start
+
+```rust
+use tossinvest::{Credentials, TossClient};
+
+#[tokio::main]
+async fn main() -> tossinvest::Result<()> {
+    let client = TossClient::new(Credentials::from_env()?)?;
+
+    // Market data (no account needed).
+    let prices = client.prices(&["005930", "AAPL"]).await?;
+
+    // Account-scoped calls.
+    let accounts = client.accounts().await?;
+    let acct = client.account(accounts[0].account_seq);
+    let holdings = acct.holdings(None).await?;
+    Ok(())
+}
+```
+
+Run the example: `cargo run -p tossinvest --example portfolio` (with `TOSSINVEST_CLIENT_ID` / `TOSSINVEST_CLIENT_SECRET` set).
+
+For a UI that subscribes to live state instead of polling, use `tossinvest-state`:
+
+```rust
+use tossinvest_state::{StateHandle, SchedulerConfig, RefreshTarget};
+
+let handle = StateHandle::spawn(client.account(seq), SchedulerConfig::default());
+let snapshot = handle.snapshot();        // wait-free, for immediate-mode GUIs
+let mut deltas = handle.subscribe();     // change stream, for event-driven UIs
+handle.refresh(RefreshTarget::Orders).await; // force an immediate refresh
+```
 
 ## Crate family
 
