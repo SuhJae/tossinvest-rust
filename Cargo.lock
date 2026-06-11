@@ -1806,6 +1806,7 @@ dependencies = [
 name = "tossinvest-rate"
 version = "0.0.0"
 dependencies = [
+ "arc-swap",
  "chrono",
  "chrono-tz",
  "governor",

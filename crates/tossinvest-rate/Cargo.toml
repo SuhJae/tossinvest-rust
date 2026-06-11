@@ -18,6 +18,7 @@ workspace = true
 governor.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+arc-swap.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

@@ -3,14 +3,14 @@
 
 use crate::auth::{Credentials, InMemoryTokenStore, TokenManager, TokenStore};
 use crate::config::{ClientConfig, RetryPolicy};
-use crate::error::{ApiErrorKind, Error, Result};
+use crate::error::{ApiErrorKind, Error, Result, TransportError};
 use crate::transport::{AuthRequirement, RawRequest, RawResponse, ReqwestTransport, Transport};
 use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use std::time::Duration;
 use tossinvest_model::{AccountSeq, ApiResponse, ErrorResponse};
-use tossinvest_rate::RateLimiterRegistry;
+use tossinvest_rate::{Feedback, RateLimitHeaders, RateLimiterRegistry};
 use url::Url;
 
 /// The top-level client. Cheap to clone (everything is behind `Arc`).
@@ -85,12 +85,27 @@ impl TossClient {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
+            // Honor a `Retry-After` park for this group (set by a prior 429).
+            if let Some(until) = self.inner.limiter.parked_until(req.group) {
+                let now = std::time::Instant::now();
+                if until > now {
+                    tokio::time::sleep(until - now).await;
+                }
+            }
+            // Proactive shaping at the group's current (possibly throttled-down) rate.
             self.inner.limiter.until_ready(req.group).await;
             let result = self.inner.transport.execute(req.clone()).await;
 
             match result {
-                Ok(resp) if resp.status.is_success() => return Ok(resp),
                 Ok(resp) => {
+                    // Feed the outcome to the congestion controller for FUTURE requests.
+                    self.inner
+                        .limiter
+                        .record_feedback(req.group, feedback_for(&resp));
+
+                    if resp.status.is_success() {
+                        return Ok(resp);
+                    }
                     // A 401 may mean an expired token — invalidate so the next attempt refreshes.
                     if resp.status.as_u16() == 401 && req.auth == AuthRequirement::Bearer {
                         self.inner.tokens.invalidate();
@@ -105,6 +120,12 @@ impl TossClient {
                     return Ok(resp); // decode() will turn it into Error::Api
                 }
                 Err(e) => {
+                    // A timeout is a soft congestion signal.
+                    if matches!(e, TransportError::Timeout) {
+                        self.inner
+                            .limiter
+                            .record_feedback(req.group, Feedback::Timeout);
+                    }
                     if req.retryable && attempt < max && e.is_transient() {
                         sleep_backoff(&self.inner.retry, attempt, None).await;
                         continue;
@@ -113,6 +134,29 @@ impl TossClient {
                 }
             }
         }
+    }
+}
+
+/// Build congestion-controller feedback from a response (status + rate-limit headers).
+fn feedback_for(resp: &RawResponse) -> Feedback {
+    let headers = RateLimitHeaders {
+        limit: resp
+            .header("x-ratelimit-limit")
+            .and_then(|v| v.parse().ok()),
+        remaining: resp
+            .header("x-ratelimit-remaining")
+            .and_then(|v| v.parse().ok()),
+        reset: resp
+            .header("x-ratelimit-reset")
+            .and_then(|v| v.parse().ok()),
+    };
+    match resp.status.as_u16() {
+        429 => Feedback::RateLimited {
+            retry_after: parse_retry_after(resp),
+            headers,
+        },
+        500..=599 => Feedback::ServerError,
+        _ => Feedback::Success { headers },
     }
 }
 

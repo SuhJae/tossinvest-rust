@@ -5,11 +5,13 @@
 //! The HTTP client's rate-limit middleware and the stateful layer's reconciler both draw
 //! from the *same* registry, so all callers share one TPS budget per group.
 
+mod dynamic;
+pub use dynamic::{AimdConfig, ControllerState, DynamicLimiter, Feedback, RateLimitHeaders};
+
 use chrono::{NaiveTime, Timelike};
-use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use std::collections::HashMap;
-use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// A rate-limit group. Each API endpoint belongs to exactly one group; the server limits
 /// requests per `client_id × group`.
@@ -98,11 +100,18 @@ pub fn is_morning_peak(t: NaiveTime) -> bool {
     (9 * 3600..9 * 3600 + 10 * 60).contains(&secs)
 }
 
-/// A process-wide registry of one [`governor`] limiter per [`RateLimitGroup`], built at the
-/// documented baseline TPS. All callers (HTTP middleware, reconciler) share these buckets.
+/// The current wall-clock time in the KST timezone (used for the peak-window ceiling).
+pub fn now_kst() -> NaiveTime {
+    use chrono::Utc;
+    Utc::now().with_timezone(&chrono_tz::Asia::Seoul).time()
+}
+
+/// A process-wide registry of one [`DynamicLimiter`] per [`RateLimitGroup`], seeded at the
+/// documented baseline TPS. All callers (HTTP middleware, reconciler) share these buckets, and
+/// the AIMD controller adapts each group's effective rate to observed server feedback.
 #[derive(Clone)]
 pub struct RateLimiterRegistry {
-    limiters: Arc<HashMap<RateLimitGroup, Arc<DefaultDirectRateLimiter>>>,
+    limiters: Arc<HashMap<RateLimitGroup, Arc<DynamicLimiter>>>,
 }
 
 impl std::fmt::Debug for RateLimiterRegistry {
@@ -114,13 +123,17 @@ impl std::fmt::Debug for RateLimiterRegistry {
 }
 
 impl RateLimiterRegistry {
-    /// Build a registry with each group seeded at its documented [`base_tps`](RateLimitGroup::base_tps).
+    /// Build a registry with each group seeded at its documented [`base_tps`](RateLimitGroup::base_tps),
+    /// using the default AIMD configuration.
     pub fn with_base_limits() -> Self {
+        Self::with_config(AimdConfig::default())
+    }
+
+    /// Build a registry with a custom AIMD configuration.
+    pub fn with_config(cfg: AimdConfig) -> Self {
         let mut limiters = HashMap::new();
         for g in RateLimitGroup::ALL {
-            let tps = NonZeroU32::new(g.base_tps()).expect("base TPS is non-zero");
-            let limiter = RateLimiter::direct(Quota::per_second(tps));
-            limiters.insert(g, Arc::new(limiter));
+            limiters.insert(g, Arc::new(DynamicLimiter::new(g, cfg)));
         }
         Self {
             limiters: Arc::new(limiters),
@@ -136,10 +149,27 @@ impl RateLimiterRegistry {
 
     /// Try to acquire a permit without waiting; `true` if one was available.
     pub fn check(&self, group: RateLimitGroup) -> bool {
+        self.limiters.get(&group).map(|l| l.check()).unwrap_or(true)
+    }
+
+    /// Feed a request outcome to a group's controller (adapts the effective rate).
+    pub fn record_feedback(&self, group: RateLimitGroup, feedback: Feedback) {
+        if let Some(limiter) = self.limiters.get(&group) {
+            limiter.record(feedback, Instant::now(), now_kst());
+        }
+    }
+
+    /// The park deadline for a group, if it is currently parked (from `Retry-After`).
+    pub fn parked_until(&self, group: RateLimitGroup) -> Option<Instant> {
+        self.limiters.get(&group).and_then(|l| l.parked_until())
+    }
+
+    /// The current effective TPS for a group (documented baseline unless throttled down).
+    pub fn effective_tps(&self, group: RateLimitGroup) -> f64 {
         self.limiters
             .get(&group)
-            .map(|l| l.check().is_ok())
-            .unwrap_or(true)
+            .map(|l| l.effective_tps())
+            .unwrap_or_else(|| group.base_tps() as f64)
     }
 }
 

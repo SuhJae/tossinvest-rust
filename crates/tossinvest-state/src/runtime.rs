@@ -367,7 +367,13 @@ async fn pump(ctx: PumpCtx) {
     } = ctx;
 
     loop {
-        let cadence = compute_cadence(&store.snapshot(), &config);
+        // Clamp the cadence so the sweep never demands faster than the (possibly
+        // throttled-down) effective rate of the order-history group permits.
+        let eff_tps = account
+            .client()
+            .rate_limiters()
+            .effective_tps(tossinvest_rate::RateLimitGroup::OrderHistory);
+        let cadence = compute_cadence(&store.snapshot(), &config, eff_tps);
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {
@@ -588,7 +594,7 @@ fn spawn_refresh(
     });
 }
 
-fn compute_cadence(snap: &ProjectedState, config: &SchedulerConfig) -> Duration {
+fn compute_cadence(snap: &ProjectedState, config: &SchedulerConfig, eff_tps: f64) -> Duration {
     let mut hot = false;
     let mut working = false;
     for v in snap.orders.values() {
@@ -600,11 +606,14 @@ fn compute_cadence(snap: &ProjectedState, config: &SchedulerConfig) -> Duration 
             working = true;
         }
     }
-    if hot {
+    let picked = if hot {
         config.hot
     } else if working {
         config.working
     } else {
         config.idle
-    }
+    };
+    // Safeguard: never sweep faster than the effective rate allows (one sweep = one call).
+    let min_interval = Duration::from_secs_f64(1.0 / eff_tps.max(0.1));
+    picked.max(min_interval)
 }
